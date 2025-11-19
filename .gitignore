@@ -1,0 +1,16 @@
+# Cache modelli e dati pesanti
+volumes/
+*.pyc
+__pycache__/
+.venv/
+*.log
+.DS_Store
+
+# Docker
+.dockerignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
