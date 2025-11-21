@@ -109,6 +109,18 @@ class MistralStream:
     async def chat_completion(
         self, messages: list[dict[str, str]]
     ) -> AsyncIterator[str]:
+        # Log the full prompt being sent to the LLM
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("=" * 80)
+        logger.info("FULL LLM PROMPT:")
+        logger.info("=" * 80)
+        for i, msg in enumerate(messages):
+            logger.info(f"\n[Message {i+1}] Role: {msg['role']}")
+            logger.info(f"Content:\n{msg['content']}")
+            logger.info("-" * 80)
+        logger.info("=" * 80)
+
         event_stream = await self.mistral.chat.stream_async(
             model="mistral-large-latest",
             messages=cast(Any, messages),  # It's too annoying to type this properly
@@ -162,6 +174,18 @@ class VLLMStream:
     async def chat_completion(
         self, messages: list[dict[str, str]]
     ) -> AsyncIterator[str]:
+        # Log the full prompt being sent to the LLM
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("=" * 80)
+        logger.info("FULL LLM PROMPT:")
+        logger.info("=" * 80)
+        for i, msg in enumerate(messages):
+            logger.info(f"\n[Message {i+1}] Role: {msg['role']}")
+            logger.info(f"Content:\n{msg['content']}")
+            logger.info("-" * 80)
+        logger.info("=" * 80)
+
         stream = await self.client.chat.completions.create(
             model=self.model,
             messages=cast(Any, messages),  # Cast and hope for the best

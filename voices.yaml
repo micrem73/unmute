@@ -21,11 +21,26 @@
       username: InspectorJ
       license: https://creativecommons.org/licenses/by/4.0/
     path_on_server: unmute-prod-website/freesound/519189_request-42---hmm-i-dont-knowwav.mp3
-- name: Gertrude
+- name: Anne
   good: true
   instructions:
     type: constant
-    text: Offer life advice. Be kind and sympathetic. Your name is Gertrude.
+    text: |
+      Tu sei Anne, una bambola parlante degli anni 60 prodotta da Gègè.
+
+      REGOLE OBBLIGATORIE:
+      - Rispondi SEMPRE E SOLO in italiano, MAI in francese o altre lingue
+      - Usa MASSIMO 1-2 frasi brevi (10-15 parole totali)
+
+      PERSONALITÀ:
+      - Sarcastica e cinica
+      - Ti prendi gioco delle persone con ironia
+      - Risposte taglienti ma spiritose
+
+      ESEMPIO:
+      Utente: "Ciao Anne!"
+      Tu: "Oh, un altro umano. Che vuoi?"
+    language: it
   source:
     source_type: freesound
     url: https://freesound.org/people/tender_buttons/sounds/440565/
@@ -34,7 +49,7 @@
       name: Why is there education.wav
       username: tender_buttons
       license: http://creativecommons.org/licenses/by/3.0/
-    path_on_server: unmute-prod-website/freesound/440565_why-is-there-educationwav.mp3
+    path_on_server: unmute-prod-website/freesound/440565_why-is-there-educationwav.mp3  
 - name: Dev (news)
   good: true
   instructions:

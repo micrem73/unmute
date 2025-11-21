@@ -38,6 +38,7 @@ from unmute.quest_manager import Quest, QuestManager
 from unmute.recorder import Recorder
 from unmute.service_discovery import find_instance
 from unmute.stt.speech_to_text import SpeechToText, STTMarkerMessage
+from unmute.stt.whisper_stt import WhisperSTT, WhisperTranscription
 from unmute.timer import Stopwatch
 from unmute.tts.text_to_speech import (
     TextToSpeech,
@@ -142,6 +143,8 @@ class UnmuteHandler(AsyncStreamHandler):
         self.debug_plot_data: list[dict] = []
         self.last_additional_output_update = self.audio_received_sec()
 
+#        self.stt: WhisperSTT | None = None 
+
         if AUDIO_INPUT_OVERRIDE is not None:
             self.audio_input_override = AudioInputOverride(AUDIO_INPUT_OVERRIDE)
         else:
@@ -216,7 +219,16 @@ class UnmuteHandler(AsyncStreamHandler):
 
     async def _generate_response_task(self):
         generating_message_i = len(self.chatbot.chat_history)
+        
+        logger.info("=== INIZIO GENERAZIONE RISPOSTA ===")
+        logger.info(f"self.stt exists: {self.stt is not None}")
 
+        # Disabilita Whisper mentre bot parla
+        if self.stt:
+            self.stt.bot_speaking = True
+            logger.info("🔇 Whisper disabilitato durante risposta")
+
+        
         await self.output_queue.put(
             ora.ResponseCreated(
                 response=ora.Response(
@@ -352,13 +364,14 @@ class UnmuteHandler(AsyncStreamHandler):
                 await self._generate_response()
             return
 
-        if (
-            len(self.chatbot.chat_history) == 1
-            # Wait until the instructions are updated. A bit hacky
-            and self.chatbot.get_instructions() is not None
-        ):
-            logger.info("Generating initial response.")
-            await self._generate_response()
+        # Commented out to prevent voices from talking immediately on selection
+        # if (
+        #     len(self.chatbot.chat_history) == 1
+        #     # Wait until the instructions are updated. A bit hacky
+        #     and self.chatbot.get_instructions() is not None
+        # ):
+        #     logger.info("Generating initial response.")
+        #     await self._generate_response()
 
         if self.audio_input_override is not None:
             frame = (frame[0], self.audio_input_override.override(frame[1]))
@@ -366,7 +379,43 @@ class UnmuteHandler(AsyncStreamHandler):
         if self.chatbot.conversation_state() == "user_speaking":
             self.debug_dict["timing"] = {}
 
-        await stt.send_audio(array)
+        # Invia audio a Whisper
+        result = await stt.send_audio(array)
+        
+        # Se Whisper ha trascritto qualcosa
+        if result and isinstance(result, WhisperTranscription):
+            await self.output_queue.put(
+                ora.ConversationItemInputAudioTranscriptionDelta(
+                    delta=result.text,
+                    start_time=result.start_time,
+                )
+            )
+            
+            if result.text.strip():
+                was_interrupted = False
+                if self.chatbot.conversation_state() == "bot_speaking":
+                    logger.info("Whisper-based interruption")
+                    await self.interrupt_bot()
+                    was_interrupted = True
+
+                self.stt_last_message_time = result.start_time
+                is_new_message = await self.add_chat_message_delta(result.text, "user")
+                if is_new_message:
+                    await self.output_queue.put(ora.InputAudioBufferSpeechStarted())
+
+                # Avvia risposta dopo trascrizione solo se non era un'interruzione
+                # (le interruzioni dovrebbero aspettare più input dall'utente)
+                if not was_interrupted and self.chatbot.conversation_state() != "bot_speaking":
+                    await self._generate_response()
+
+        # Skip old pause detection logic when using WhisperSTT
+        # WhisperSTT handles pause detection internally
+        from unmute.stt.whisper_stt import WhisperSTT
+        if isinstance(stt, WhisperSTT):
+            # WhisperSTT handles everything internally, no additional pause detection needed
+            return
+
+        # === Old pause detection logic for streaming STT (Kyutai) ===
         if self.stt_end_of_flush_time is None:
             await self.detect_long_silence()
 
@@ -453,52 +502,23 @@ class UnmuteHandler(AsyncStreamHandler):
         return await self.quest_manager.__aexit__(*exc)
 
     async def start_up_stt(self):
-        async def _init() -> SpeechToText:
-            return await find_instance("stt", SpeechToText)
+        async def _init() -> WhisperSTT:
+            stt = WhisperSTT(sample_rate=self.input_sample_rate)
+ #           self.stt = stt  # <-- AGGIUNGI
+            return stt
 
-        async def _run(stt: SpeechToText):
-            await self._stt_loop(stt)
+        async def _run(stt: WhisperSTT):
+            # WhisperSTT non ha loop - gestisce in send_audio
+            while True:
+                await asyncio.sleep(1)
 
-        async def _close(stt: SpeechToText):
+        async def _close(stt: WhisperSTT):
             await stt.shutdown()
 
         quest = await self.quest_manager.add(Quest("stt", _init, _run, _close))
-        # We want to be sure to have the STT before starting anything.
         await quest.get()
 
-    async def _stt_loop(self, stt: SpeechToText):
-        try:
-            async for data in stt:
-                if isinstance(data, STTMarkerMessage):
-                    # Ignore the marker messages
-                    continue
 
-                await self.output_queue.put(
-                    ora.ConversationItemInputAudioTranscriptionDelta(
-                        delta=data.text,
-                        start_time=data.start_time,
-                    )
-                )
-
-                # The STT sends an empty string as the first message, but we
-                # don't want to add that because it can trigger a pause even
-                # if the user hasn't started speaking yet.
-                if data.text == "":
-                    continue
-
-                if self.chatbot.conversation_state() == "bot_speaking":
-                    logger.info("STT-based interruption")
-                    await self.interrupt_bot()
-
-                self.stt_last_message_time = data.start_time
-                is_new_message = await self.add_chat_message_delta(data.text, "user")
-                if is_new_message:
-                    # Ensure we don't stop after the first word if the VAD didn't have
-                    # time to react.
-                    stt.pause_prediction.value = 0.0
-                    await self.output_queue.put(ora.InputAudioBufferSpeechStarted())
-        except websockets.ConnectionClosed:
-            logger.info("STT connection closed while receiving messages.")
 
     async def start_up_tts(self, generating_message_i: int) -> Quest[TextToSpeech]:
         async def _init() -> TextToSpeech:
@@ -586,10 +606,6 @@ class UnmuteHandler(AsyncStreamHandler):
 
                     if audio_started is None:
                         audio_started = self.audio_received_sec()
-                        
-
-                    if audio_started is None:
-                        audio_started = self.audio_received_sec()
                 elif isinstance(message, TTSTextMessage):
                     await output_queue.put(ora.ResponseTextDelta(delta=message.text))
                     await self.add_chat_message_delta(
@@ -647,12 +663,6 @@ class UnmuteHandler(AsyncStreamHandler):
             self.bambola_buffer.response_buffer = None
             logger.info("🧹 Modalità bambola disattivata, buffer ripulito")
 
-        # Codice esistente:
-        await self.output_queue.put(self.get_gradio_update())
-        await self.output_queue.put(ora.ResponseAudioDone())
-
-
-        
         # It's convenient to have the whole chat history available in the client
         # after the response is done, so send the "gradio update"
         await self.output_queue.put(self.get_gradio_update())
@@ -662,8 +672,15 @@ class UnmuteHandler(AsyncStreamHandler):
         await self.add_chat_message_delta("", "user")
 
         await asyncio.sleep(1)
+
+        # Riabilita Whisper dopo risposta TTS
+        if self.stt:
+            self.stt.bot_speaking = False
+            logger.info("🎤 Whisper riabilitato")
+        
         await self.check_for_bot_goodbye()
         self.waiting_for_user_start_time = self.audio_received_sec()
+        
 
     async def interrupt_bot(self):
         if self.chatbot.conversation_state() != "bot_speaking":
@@ -673,6 +690,10 @@ class UnmuteHandler(AsyncStreamHandler):
             )
 
         await self.add_chat_message_delta(INTERRUPTION_CHAR, "assistant")
+        # Riabilita Whisper su interruzione
+        if self.stt:
+            self.stt.bot_speaking = False
+            logger.info("🎤 Whisper riabilitato dopo interruzione")
 
         if self._clear_queue is not None:
             # Clear any audio queued up by FastRTC's emit().
@@ -723,9 +744,9 @@ class UnmuteHandler(AsyncStreamHandler):
             await self.add_chat_message_delta(USER_SILENCE_MARKER, "user")
 
     async def update_session(self, session: ora.SessionConfig):
-        # COMMENTA QUESTA RIGA per non sovrascrivere il prompt bambola:
-        # if session.instructions:
-        #     self.chatbot.set_instructions(session.instructions)
+        # Voice-specific instructions are now enabled
+        if session.instructions:
+            self.chatbot.set_instructions(session.instructions)
 
         if session.voice:
             self.tts_voice = session.voice

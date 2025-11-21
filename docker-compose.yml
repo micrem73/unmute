@@ -36,13 +36,15 @@ services:
       target: hot-reloading
     volumes:
       - ./unmute:/app/unmute
+      - ./voices.yaml:/app/voices.yaml
     environment:
       - KYUTAI_STT_URL=ws://stt:8080
       - KYUTAI_TTS_URL=ws://tts:8080
       - KYUTAI_LLM_URL=https://api.together.xyz
-      - KYUTAI_LLM_MODEL=mistralai/Mistral-7B-Instruct-v0.3
+      - KYUTAI_LLM_MODEL=deepseek-ai/DeepSeek-V3
       - KYUTAI_LLM_API_KEY=${TOGETHER_API_KEY}
       - NEWSAPI_API_KEY=$NEWSAPI_API_KEY
+      - OPENAI_API_KEY=${OPENAI_API_KEY}       
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.backend.rule=PathPrefix(`/api`)"

@@ -226,3 +226,11 @@ class SpeechToText(ServiceWithStartup):
             pass
         finally:
             self.shutdown_complete.set()
+            
+    # Importa Whisper STT
+    try:
+        from unmute.stt.whisper_stt import WhisperSTT, WhisperTranscription
+        WHISPER_AVAILABLE = True
+    except ImportError:
+        WHISPER_AVAILABLE = False
+        logger.warning("WhisperSTT non disponibile")

@@ -178,13 +178,14 @@ async def _get_health(
             )
         )
         tts_up_res = await tts_up
-        stt_up_res = await stt_up
+#        stt_up_res = await stt_up
 #        llm_up_res = await llm_up
         voice_cloning_up_res = await voice_cloning_up
 
     return HealthStatus(
         tts_up=tts_up_res,
-        stt_up=stt_up_res,
+#        stt_up=stt_up_res,
+        stt_up=True,
 #        llm_up=llm_up_res,
         llm_up=True,  # <-- Impostiamo a True (Together.ai è esterno)        
         voice_cloning_up=voice_cloning_up_res,
@@ -199,8 +200,8 @@ async def get_health():
 
 
 @app.get("/v1/voices")
-@cache
 def voices():
+    # Note: Cache removed to allow voices.yaml updates without full restart
     voice_list = VoiceList()
     # Note that `voice.good` is bool | None, here we really take only True values.
     good_voices = [
