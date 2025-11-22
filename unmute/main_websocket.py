@@ -487,21 +487,10 @@ async def receive_loop(
 
         # === EVENTI BAMBOLA ===
         elif isinstance(message, ora.UnmuteBambolaCordinoTirato):
-            logger.info("🎯 CORDINO TIRATO - Modalità bambola attivata")
-            handler.bambola_buffer.is_bambola_mode = True
-            handler.bambola_buffer.start_recording()
-            await emit_queue.put(ora.InputAudioBufferSpeechStarted())
-            
+            await handler.handle_cordino_tirato()
+
         elif isinstance(message, ora.UnmuteBambolaCordinoRilasciato):
-            logger.info("🎯 CORDINO RILASCIATO - Elaborazione in corso")
-            handler.bambola_buffer.stop_recording()
-            
-            # Trigger fine registrazione
-            recorded_audio = handler.bambola_buffer.get_recorded_audio()
-            logger.info(f"Audio registrato: {len(recorded_audio)} bytes")
-            
-            # Simula pausa rilevata per avviare elaborazione
-            await emit_queue.put(ora.InputAudioBufferSpeechStopped())
+            await handler.handle_cordino_rilasciato()
             
         
         elif isinstance(message, ora.UnmuteAdditionalOutputs):

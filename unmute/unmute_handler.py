@@ -54,11 +54,13 @@ from collections import deque
 class BambolaBufferState:
     """Gestisce stato buffer per bambola parlante"""
     def __init__(self):
-        self.is_bambola_mode = False
+        self.is_bambola_mode = True  # Always buffer by default
         self.is_recording = False
-        self.audio_chunks = deque()
-        self.response_buffer = None
+        self.audio_chunks: deque = deque()
+        self.response_buffer: list[tuple[int, np.ndarray]] | None = None
         self.buffer_ready = False
+        self.can_play = False  # Only play when rilasciato is triggered
+        self.cordino_tirato = False  # Track if button is pressed
         
     def start_recording(self):
         self.is_recording = True
@@ -66,17 +68,27 @@ class BambolaBufferState:
         self.response_buffer = None
         self.buffer_ready = False
         logger.info("🎙️ Buffer bambola: registrazione avviata")
-        
+
     def stop_recording(self):
         self.is_recording = False
         logger.info("🛑 Buffer bambola: registrazione fermata")
-        
-    def add_chunk(self, chunk):
+
+    def add_chunk(self, chunk: bytes):
         if self.is_recording:
             self.audio_chunks.append(chunk)
-            
+
     def get_recorded_audio(self):
         return b''.join(self.audio_chunks)
+
+    def reset_for_new_cycle(self):
+        """Reset buffer state for a new recording/playback cycle"""
+        self.is_recording = False
+        self.audio_chunks.clear()
+        self.response_buffer = None
+        self.buffer_ready = False
+        self.can_play = False
+        self.cordino_tirato = False
+        logger.info("🔄 Buffer bambola: reset per nuovo ciclo")
 
 # TTS_DEBUGGING_TEXT: str | None = "What's 'Hello world'?"
 # TTS_DEBUGGING_TEXT: str | None = "What's the difference between a bagel and a donut?"
@@ -157,12 +169,12 @@ class UnmuteHandler(AsyncStreamHandler):
             await self.recorder.shutdown()
 
     @property
-    def stt(self) -> SpeechToText | None:
+    def stt(self) -> WhisperSTT | None:
         try:
             quest = self.quest_manager.quests["stt"]
         except KeyError:
             return None
-        return cast(Quest[SpeechToText], quest).get_nowait()
+        return cast(Quest[WhisperSTT], quest).get_nowait()
 
     @property
     def tts(self) -> TextToSpeech | None:
@@ -224,7 +236,7 @@ class UnmuteHandler(AsyncStreamHandler):
         logger.info(f"self.stt exists: {self.stt is not None}")
 
         # Disabilita Whisper mentre bot parla
-        if self.stt:
+        if self.stt and isinstance(self.stt, WhisperSTT):
             self.stt.bot_speaking = True
             logger.info("🔇 Whisper disabilitato durante risposta")
 
@@ -403,10 +415,9 @@ class UnmuteHandler(AsyncStreamHandler):
                 if is_new_message:
                     await self.output_queue.put(ora.InputAudioBufferSpeechStarted())
 
-                # Avvia risposta dopo trascrizione solo se non era un'interruzione
-                # (le interruzioni dovrebbero aspettare più input dall'utente)
-                if not was_interrupted and self.chatbot.conversation_state() != "bot_speaking":
-                    await self._generate_response()
+                # Response generation now only happens when cordino_tirato is received
+                # Do not auto-generate - wait for button press
+                logger.debug(f"Whisper transcription added to chat: {result.text[:50]}...")
 
         # Skip old pause detection logic when using WhisperSTT
         # WhisperSTT handles pause detection internally
@@ -631,13 +642,13 @@ class UnmuteHandler(AsyncStreamHandler):
             message = ""
 
 
-        # === INVIO BUFFER BAMBOLA ===
+        # === BUFFER BAMBOLA READY ===
         if self.bambola_buffer.is_bambola_mode and self.bambola_buffer.response_buffer:
             total_samples = sum(audio.shape[0] for _, audio in self.bambola_buffer.response_buffer)
             self.bambola_buffer.buffer_ready = True
-            
+
             logger.info(f"✅ Buffer audio pronto: {total_samples} samples totali")
-            
+
             # Notifica client che buffer è pronto
             await self.output_queue.put(
                 ora.UnmuteBambolaBufferReady(
@@ -646,22 +657,13 @@ class UnmuteHandler(AsyncStreamHandler):
                     llm_response=self.chatbot.last_message("assistant") or ""
                 )
             )
-            
-            # Invia evento inizio riproduzione
-            await self.output_queue.put(ora.UnmuteBambolaPlaybackStarted())
-            
-            # Invia tutto il buffer accumulato
-            for sample_rate, audio_chunk in self.bambola_buffer.response_buffer:
-                await self.output_queue.put((sample_rate, audio_chunk))
-            
-            # Notifica fine riproduzione
-            await self.output_queue.put(ora.UnmuteBambolaPlaybackCompleted())
-            
-            # Reset per prossimo ciclo
-            self.bambola_buffer.is_bambola_mode = False
-            self.bambola_buffer.buffer_ready = False
-            self.bambola_buffer.response_buffer = None
-            logger.info("🧹 Modalità bambola disattivata, buffer ripulito")
+
+            # If rilasciato was already received while buffering, play immediately
+            if self.bambola_buffer.can_play:
+                logger.info("🎬 Rilasciato già ricevuto - riproduzione immediata")
+                await self.play_bambola_buffer()
+            else:
+                logger.info("⏳ In attesa di rilasciato per riproduzione")
 
         # It's convenient to have the whole chat history available in the client
         # after the response is done, so send the "gradio update"
@@ -674,7 +676,7 @@ class UnmuteHandler(AsyncStreamHandler):
         await asyncio.sleep(1)
 
         # Riabilita Whisper dopo risposta TTS
-        if self.stt:
+        if self.stt and isinstance(self.stt, WhisperSTT):
             self.stt.bot_speaking = False
             logger.info("🎤 Whisper riabilitato")
         
@@ -691,7 +693,7 @@ class UnmuteHandler(AsyncStreamHandler):
 
         await self.add_chat_message_delta(INTERRUPTION_CHAR, "assistant")
         # Riabilita Whisper su interruzione
-        if self.stt:
+        if self.stt and isinstance(self.stt, WhisperSTT):
             self.stt.bot_speaking = False
             logger.info("🎤 Whisper riabilitato dopo interruzione")
 
@@ -711,6 +713,72 @@ class UnmuteHandler(AsyncStreamHandler):
 
         await self.quest_manager.remove("tts")
         await self.quest_manager.remove("llm")
+
+    async def handle_cordino_tirato(self):
+        """Handle button press - start recording and response generation"""
+        logger.info("🎯 CORDINO TIRATO - Inizio registrazione e generazione")
+
+        # Reset buffer for new cycle
+        self.bambola_buffer.reset_for_new_cycle()
+        self.bambola_buffer.cordino_tirato = True
+        self.bambola_buffer.start_recording()
+
+        # Start generating response
+        # The user audio should already be in chat history from Whisper transcription
+        conv_state = self.chatbot.conversation_state()
+
+        # Check if there's user input to respond to
+        last_user_msg = self.chatbot.last_message("user")
+        has_user_input = last_user_msg and last_user_msg.strip()
+
+        if conv_state == "bot_speaking":
+            logger.warning(f"Cannot start response - bot is already speaking")
+        elif not has_user_input:
+            logger.warning("No user input to respond to - waiting for speech")
+        else:
+            preview = last_user_msg[:50] if last_user_msg else ""
+            logger.info(f"Starting response generation for: {preview}...")
+            await self._generate_response()
+
+    async def handle_cordino_rilasciato(self):
+        """Handle button release - play buffer if ready, or mark for play when ready"""
+        logger.info("🎯 CORDINO RILASCIATO - Richiesta riproduzione")
+
+        self.bambola_buffer.cordino_tirato = False
+        self.bambola_buffer.stop_recording()
+        self.bambola_buffer.can_play = True
+
+        # If buffer is already ready, play immediately
+        if self.bambola_buffer.buffer_ready:
+            await self.play_bambola_buffer()
+        else:
+            logger.info("⏳ Buffer non ancora pronto, riprodurrà automaticamente quando completo")
+
+    async def play_bambola_buffer(self):
+        """Play the buffered audio when rilasciato event is received"""
+        if not self.bambola_buffer.buffer_ready or not self.bambola_buffer.response_buffer:
+            logger.warning("No buffer ready to play")
+            return
+
+        if not self.bambola_buffer.can_play:
+            logger.warning("Cannot play - rilasciato not yet received")
+            return
+
+        logger.info("🔊 Inizio riproduzione buffer")
+
+        # Invia evento inizio riproduzione
+        await self.output_queue.put(ora.UnmuteBambolaPlaybackStarted())
+
+        # Invia tutto il buffer accumulato
+        for sample_rate, audio_chunk in self.bambola_buffer.response_buffer:
+            await self.output_queue.put((sample_rate, audio_chunk))
+
+        # Notifica fine riproduzione
+        await self.output_queue.put(ora.UnmuteBambolaPlaybackCompleted())
+
+        # Reset per prossimo ciclo
+        self.bambola_buffer.reset_for_new_cycle()
+        logger.info("🧹 Buffer ripulito dopo riproduzione")
 
     async def check_for_bot_goodbye(self):
         last_assistant_message = next(

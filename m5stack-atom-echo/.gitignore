@@ -1,0 +1,25 @@
+# PlatformIO
+.pio/
+.vscode/
+lib/
+.pioenvs/
+.piolibdeps/
+
+# Build artifacts
+*.o
+*.a
+*.elf
+*.bin
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# User configuration (don't commit credentials)
+src/config.h.local

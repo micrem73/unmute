@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useMicrophoneAccess } from "./useMicrophoneAccess";
 import { base64DecodeOpus, base64EncodeOpus } from "./audioUtil";
 import SlantedButton from "@/app/SlantedButton";
+import BambolaButton from "@/app/BambolaButton";
 import { useAudioProcessor as useAudioProcessor } from "./useAudioProcessor";
 import useKeyboardShortcuts from "./useKeyboardShortcuts";
 import { prettyPrintJson } from "pretty-print-json";
@@ -32,6 +33,7 @@ const Unmute = () => {
   );
   const [rawChatHistory, setRawChatHistory] = useState<ChatMessage[]>([]);
   const chatHistory = compressChatHistory(rawChatHistory);
+  const [isBambolaRilasciato, setIsBambolaRilasciato] = useState(true);
 
   const { microphoneAccess, askMicrophoneAccess } = useMicrophoneAccess();
 
@@ -146,6 +148,23 @@ const Unmute = () => {
         setErrors((prev) => [...prev, makeErrorItem(e.message)]);
       }
     }
+  };
+
+  const onBambolaButtonPress = () => {
+    const newState = !isBambolaRilasciato;
+    setIsBambolaRilasciato(newState);
+
+    // Send WebSocket event
+    const eventType = newState
+      ? "unmute.bambola.cordino_rilasciato"
+      : "unmute.bambola.cordino_tirato";
+
+    sendMessage(
+      JSON.stringify({
+        type: eventType,
+        timestamp: Date.now(),
+      })
+    );
   };
 
   // If the websocket connection is closed, shut down the audio processing
@@ -305,6 +324,11 @@ const Unmute = () => {
           >
             {"download recording"}
           </SlantedButton>
+          <BambolaButton
+            onClick={onBambolaButtonPress}
+            isRilasciato={isBambolaRilasciato}
+            extraClasses="w-full max-w-96"
+          />
           <SlantedButton
             onClick={onConnectButtonPress}
             kind={shouldConnect ? "secondary" : "primary"}
